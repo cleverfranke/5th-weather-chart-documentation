@@ -1,0 +1,168 @@
+---
+title: "C°F 5th Weather Chart - Mountain Biking (NL, Eindhoven) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Mountain Biking (NL, Eindhoven) Analysis
+
+## On Strava
+
+Strava is a website and mobile app used to track athletic activity via GPS. One type of data from Strava is called a *Segment* and is defined as "specific sections of road" on which "athletes' times are compared". An athlete performance is called an *Effort*. Back when the analysis was made, Strava API had an available endpoint `/segments/{segment_id}/all_efforts` which allowed to request for all the performance of athletes on a given segment, for a given date range, without the need of athlete's approval. This endpoint is unfortunately not available anymore, thus fetching the data is not reproducible.
+
+## About
+
+In this analysis, we compared the amount of people mountain biking for sport with temperature and rainfall. 
+
+The steps taken for this analysis are:
+
+- Get the number of mountain bike rides per day
+- Merge with the weather data
+- Aggregate to the total number of rides per week, mean temperature and rainfall per week.
+
+In the following section, you will find more details about each step.
+
+## Sources 
+- Strava API : <https://strava.github.io/api/>
+- KNMI Daily weather : 
+    * <http://www.knmi.nl/nederland-nu/klimatologie/daggegevens>
+    * <http://www.knmi.nl/kennis-en-datacentrum/achtergrond/data-ophalen-vanuit-een-script>
+- Highlights :
+    * http://www.mountainbike.nl/forum/viewtopic.php?f=5&t=118369
+    * http://www.wtccw.nl/nieuws/18-aankondiging-activiteit/1229-rondje-geldrop-13-december-2015
+    * http://nos.nl/artikel/2014977-knmi-code-oranje-vanwege-ijzel.html
+
+
+## Methodology
+
+```{r libs, message=FALSE}
+
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+source('../utils_NL.R')
+```
+
+### Find a segment
+There are many segments available. After logging in the Strava website, it is possible to [explore segments](https://www.strava.com/segments/explore) for a given location.
+
+The criterias to pick a segment to analyse were:
+
+- The segment should have a large amount of athlete efforts recorded
+- The segment should not be a particular segment where the attendance levels could be influenced by a major factor.
+For example, a segment located on a university campus could be biased by scheduled sport trainings, and therefore would not reflect a weather influence.
+
+Following this two rules we picked a segment called ["Gulberg Correct"](https://www.strava.com/segments/8596410). It is a mountain biking ride segment in Mierlo, Noord-Brabant, near Eindhoven.
+
+
+### Get efforts for a segment
+By querying the API with the segment ID, a start timestamp and an end timestamp, we get back the list of efforts conducted on the segment. 
+For the segment we picked, the ID was `8596410`, and the date range was `start_date_local=2015-01-01T00:00:00Z` to `end_date_local=2015-12-31T23:59:59Z`.
+Example of the response head:
+
+```{r query-api,  cache=TRUE}
+segmentData <- read.csv('../data/segment_8596410.csv')
+
+# Format date
+segmentData$YYYYMMDD <- as.Date(segmentData$start_date_local, "%Y-%m-%d")
+
+head(segmentData)
+```
+
+### Get number of mountain bike rides per day
+```{r count}
+sf_data <- ddply( segmentData , .(YYYYMMDD) , summarise , Count = length(YYYYMMDD), totalDistance = sum(distance), totalTime = sum(elapsed_time), meanTime= mean(elapsed_time), meanDistance=mean(distance) )
+names(sf_data)[names(sf_data) == 'YYYYMMDD'] <- 'date'
+
+head(sf_data)
+``` 
+
+
+### Get the weather
+For more information on how the weather is treated, see the related reference. 
+First we subset the weather stations to those around Eindhoven. For this particular case the subset correspond to one station only.
+
+```{r weather-stations}
+# KNMI weather stations
+nl_stations <- read.csv('../data/all_station_KNMI_cleaned.csv', header=TRUE, sep=",")
+# Get stations of area
+area_stations <- nl_stations[ nl_stations$LAT > 51.384754 & nl_stations$LAT < 51.496760 & nl_stations$LON < 5.559295 & nl_stations$LON > 5.2, ]
+area_stations
+```
+
+Then we get the weather from KNMI and merge it with the station in order to get the weather of that station.
+After some formatting the weather data is ready to use.
+
+```{r weather, cache=TRUE}
+# Weather data between 2013 and 2015
+weather_data <- getKNMIDailyData('2013', '01', '01', '2015', '12', '31')
+# Merge with station data
+weather_data_stn <- merge(weather_data, area_stations, by='STN')
+# Format weather data
+weather_data_format <- formatNLWeatherDailyData(weather_data_stn)
+head(weather_data_format)
+```
+
+### Merge mountain bike rides and weather data
+We merge by date.
+
+```{r merge}
+sf_data_weather <- merge(sf_data, weather_data_format, by='date', all.y=TRUE)
+sf_data_weather$Count[is.na(sf_data_weather$Count)] <- 0
+
+head(sf_data_weather)
+```
+
+
+### Aggregate per week
+
+```{r byweek}
+sumbyweek <- aggregate(cbind(Count, RH, SQ)~week(date)+year(date),data=sf_data_weather, FUN=sum, na.rm=TRUE)
+colnames(sumbyweek) <- c('week', 'year', 'sumcount', 'sumRH', 'sumSQ')
+sumbyweek$year <- as.factor(sumbyweek$year)
+head(sumbyweek)
+
+meanbyweek <- aggregate(cbind(Count, TX, TN)~week(date),data=sf_data_weather, FUN=mean, na.rm=TRUE)
+colnames(meanbyweek) <- c('week', 'sumcount', 'meanTX', 'meanTN')
+head(meanbyweek)
+
+avgRH <- aggregate(cbind(sumbyweek$sumRH), data=sumbyweek, FUN=mean, by=list(sumbyweek$week))
+colnames(avgRH) <- c('week', 'avgRH')
+head(avgRH)
+```
+
+## Plots
+```{r plot, fig.width=12, fig.height=8}
+p1 <- ggplot(sumbyweek, aes(x=week, y=sumcount)) + geom_line(aes(colour=year)) +
+  xlab("Weeks") +
+  ylab("Total mountain bike rides") +
+  ggtitle("Total mountain bike rides per week and year")
+
+p1
+
+p2 <- ggplot(meanbyweek, aes(x=week)) +
+  geom_line(colour='red', aes(y=meanTX)) +
+  geom_line(colour='blue', aes(y=meanTN)) +
+  xlab("Weeks") +
+  ylab("Avg. temperature per week") +
+  ggtitle("Avg. min and max temperature per week over three years")
+
+p2
+
+p3 <- ggplot(avgRH, aes(week)) +
+  geom_bar(aes(weight=avgRH)) +
+  xlab("Weeks") +
+  ylab("Total rainfall in a week (mm)") +
+  ggtitle("Avg. total rainfall per week")
+
+p3
+```
+

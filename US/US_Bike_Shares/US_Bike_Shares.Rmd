@@ -1,0 +1,164 @@
+---
+title: "C°F 5th Weather Chart - Bike Shares, (US, New York) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Bike Shares, (US, New York) Analysis
+
+
+## About
+In this analysis, we compared the number of bike shares with temperature, rainfall and snow depth. 
+
+The bike share data comes from Citibike: "Citi Bike is New York City's bike share system. [...] Citi Bike is available for use 24 hours/day, 7 days/week, 365 days/year, and riders have access to thousands of bikes at hundreds of stations across Manhattan, Brooklyn, Queens and Jersey City. [^1]"
+
+The steps taken for this analysis are:
+
+- Get bike share data
+- Count the number of bike share per day, and total duration of all the trips per day
+- Merge with weather data
+- Calculate average number of bike shares per day and average trip duration per day when there is no rain and when there is rain
+- Calculate average number of bike shares per day and average trip duration per day when there is no snow on the ground and when there is no snow on the ground
+- Calculate temperature terciles
+
+
+In the following section you will find more details for each step.
+
+## Sources 
+- Citibike System Data: <https://www.citibikenyc.com/system-data>
+- NOAA Weather : <ftp://ftp.ncdc.noaa.gov/pub/data/ghcn/daily/by_year/>
+
+
+## Methodology
+
+``` {r libs, message=FALSE}
+source('../utils_US.R')
+library(plyr)
+library(ggplot2)
+library(lubridate)
+```
+### Get citibike data
+Citibike datasets are available by month. We used 2015 data only. After binding the different months dataset together, the citibike dataset looks like this:
+
+```{r citibike, cache=TRUE}
+citibike <- read.csv('../data/US_NY_Citibike_all.csv')
+citibike$date <- as.Date(citibike$starttime, "%m/%d/%Y")
+head(citibike)
+```
+
+Then we count the amount of bike trips per day, and the total duration of all the trips per day. Trip durations are given in seconds.
+
+```{r citibike-agg}
+citibike_count <- ddply( citibike , .(date) , summarise , Count=length(date), sumTime=sum(tripduration))
+head(citibike_count)
+```
+
+### Get the weather
+For more details on how the weather data was treated, see the related reference. 
+As we are considering the city center of New York, we decided to average the weather data of that area, by date.
+
+```{r weather, cache=TRUE}
+weather_data <- read.csv('../data/weather_NY_2015.csv')
+weather_data$date <- as.Date(weather_data$date, format="%Y-%m-%d")
+```
+
+### Merge citibike and weather
+
+```{r merge}
+citibike_weather <- merge(citibike_count, weather_data, by='date')
+head(citibike_weather)
+```
+
+### Snow 
+```{r snow}
+# Amount of trips depending on weather - Snow depth > 0
+mean(citibike_weather[citibike_weather$SNWD > 0, 'Count'])
+
+# Amount of trips depending on weather - Snow depth = 0
+mean(citibike_weather[citibike_weather$SNWD == 0, 'Count'])
+
+# Average trip duration per day - Snow depth > 0
+(sum(as.numeric(citibike_weather[citibike_weather$SNWD > 0, 'sumTime'])) / sum(citibike_weather[citibike_weather$SNWD > 0, 'Count'])) / 60
+
+# Average trip duration per day - Snow depth = 0
+(sum(as.numeric(citibike_weather[citibike_weather$SNWD == 0, 'sumTime'])) / sum(citibike_weather[citibike_weather$SNWD == 0, 'Count'])) / 60
+```
+
+### Rain
+```{r rain}
+# Amount of trips depending on weather - No rain < 0.01 inches (which is 0.254mm)
+mean(citibike_weather[citibike_weather$PRCP < 0.254, 'Count'])
+
+# Amount of trips depending on weather - Rain >= 0.01 inches (which is 0.254mm)
+mean(citibike_weather[citibike_weather$PRCP >= 0.254, 'Count'])
+
+# Average trip duration per day  - No rain < 0.01 inches (which is 0.254mm)
+(sum(as.numeric(citibike_weather[citibike_weather$PRCP < 0.254, 'sumTime'])) / sum(citibike_weather[citibike_weather$PRCP < 0.254, 'Count'])) / 60
+
+# Average trip duration per day  - Rain >= 0.01 inches (which is 0.254mm)
+(sum(as.numeric(citibike_weather[citibike_weather$PRCP >= 0.254, 'sumTime'])) / sum(citibike_weather[citibike_weather$PRCP >= 0.254, 'Count'])) / 60
+```
+
+### Temperature
+"The nth percentile of an observation variable is the value that cuts off the first n percent of the data values when it is sorted in ascending order."[^2] 
+Maximum temperature was sorted in ascending order and then cut into three parts. 
+
+- The 1st part has 122 days
+- The 2nd part has 122 days
+- The 3rd part has 121 days
+
+```{r temp-quantiles}
+# Terciles
+q <- quantile(citibike_weather$TMAX, seq(0,1, by=1/3))
+q
+
+# Order by max temperature
+ordered <- citibike_weather[order(citibike_weather$TMAX),]
+
+# Get the three sections
+first <- ordered[1:122,]
+second <- ordered[123:244,]
+third <- ordered[245:365,]
+
+# Amount of trips depending on weather - First
+mean(first$Count)
+
+# Amount of trips depending on weather - Second 
+mean(second$Count)
+
+# Amount of trips depending on weather - Third
+mean(third$Count)
+
+# Average trip duration per day - First
+(sum(as.numeric(first$sumTime)) / sum(first$Count)) / 60
+
+# Average trip duration per day - Second 
+(sum(as.numeric(second$sumTime)) / sum(second$Count)) / 60
+
+# Average trip duration per day - Third
+(sum(as.numeric(third$sumTime)) / sum(third$Count)) / 60
+```
+
+### Map data
+The map shows the amount of bike shares which started from a Citibike station. [^3]
+
+```{r map}
+map_data <- ddply( citibike , .(start.station.id) , summarise , Count=length(start.station.id), lat=mean(start.station.latitude), lon=mean(start.station.longitude))
+head(map_data)
+```
+
+## Notes
+- On the final graph, temperature is in Fahrenheit, rainfall and snow depth are in inches. 
+- On the final graph, trip durations are converted to minutes and seconds.
+
+[^1]: From <https://www.citibikenyc.com/about>
+[^2]: From <http://www.r-tutor.com/elementary-statistics/numerical-measures/percentile>
+[^3]: Because we group by station ID, the latitude and longitude are the same inside the groups, therefore taking the average of the latitude remains the latitude of the station.

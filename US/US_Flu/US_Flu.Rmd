@@ -1,0 +1,96 @@
+---
+title: "C°F 5th Weather Chart - Flu, (US, South Central) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Flu, (US, South Central) Analysis
+
+## About
+In this analysis, we compared the proportion of people visiting their healthcare providers for influenza-like illness with the temperature. 
+
+South Central is Arkansas, Louisiana, New Mexico, Oklahoma, and Texas.
+
+"Information on patient visits to health care providers for influenza-like illness is collected through the U.S. Outpatient Influenza-like Illness Surveillance Network (ILINet). [...] The percentage of patient visits to healthcare providers for ILI reported each week is weighted on the basis of state population. This percentage is compared each week with the national baseline. The baseline is developed by calculating  the mean percentage of patient visits for ILI during non-influenza weeks for the previous three seasons and adding two standard deviations. "[^2]
+
+The steps taken for this analysis are:
+
+- Get the flu data
+- Merge with the weather data (average temperature per week)
+
+In the following section you will find more details for each step.
+
+## Sources 
+- CDC Fluview - National and Regional Level Outpatient Illness and Viral Surveillance[^1] : <https://gis.cdc.gov/grasp/fluview/fluportaldashboard.html>
+- Highlights :
+    * <http://sitn.hms.harvard.edu/flash/2014/the-reason-for-the-season-why-flu-strikes-in-winter/>
+    * <http://www.who.int/csr/disease/swineflu/frequently_asked_questions/about_disease/en/>
+- CDC Fluview documentation <https://gis.cdc.gov/grasp/fluview/FluViewPhase2QuickReferenceGuide.pdf>
+- NOAA Weather : <ftp://ftp.ncdc.noaa.gov/pub/data/ghcn/daily/by_year/>
+
+
+## Methodology
+
+``` {r libs, message=FALSE}
+source('../utils_US.R')
+
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+```
+
+
+### Get the flu data
+The flu dataset that we used is about the region 6 of Health and Human Services (HHS) Regions which corresponds to Arkansas, Louisiana, New Mexico, Oklahoma, and Texas. The final chart uses the ILINet data between 2007 to 2016.
+
+```{r flu}
+ilit <- read.csv('../data/ilit.csv')
+head(ilit)
+```
+
+### Get the weather data
+For more details on how the weather data was treated, see the related reference. 
+The flu dataset gives no indication of location, therefore we had to average the weather over all the weather stations located in the Region 6 (HHS). Although it brings imprecision as it is an average over 5 U.S. states, we are only considering temperature variations which still have a general common trend among those 5 states. 
+
+The weather data was then averaged per week, between 2007 and 2016.
+
+```{r weather}
+weather_data <- read.csv('../data/weather_2007-16_week.csv')
+names(weather_data)[names(weather_data) == 'isoweek.date.'] <- 'WEEK'
+weather_data <- weather_data[c('YEAR', 'WEEK', 'TAVG')]
+head(weather_data)
+```
+
+### Flu and weather
+Then we merge weather and flu data together, per year and week:
+
+```{r merge}
+df <- merge(ilit, weather_data, by=c('YEAR', 'WEEK'))
+head(df)
+```
+
+## Plots
+```{r plots, message=FALSE}
+df$ilit_percentage <- as.numeric(as.character(df$X..WEIGHTED.ILI))
+
+p1 <- ggplot(df, aes(x=TAVG, y=ilit_percentage)) + geom_point() + geom_smooth() +
+    xlab("Average temperature (C)") +
+    ylab("Percentage of patient visits for influenza-like illness") + 
+    ggtitle("Percentage of patient visits for influenza-like illness depending on average temperature")
+    
+p1
+```
+
+
+[^1]: Fluview needs Flash to work correctly, therefore you could use Firefox to open it.
+[^2]: From CDC Fluview documentation <https://gis.cdc.gov/grasp/fluview/FluViewPhase2QuickReferenceGuide.pdf>
+[^3]: "isoweek returns the week as it would appear in the ISO 8601 system, which uses a reoccuring leap
+week" <https://cran.r-project.org/web/packages/lubridate/lubridate.pdf>

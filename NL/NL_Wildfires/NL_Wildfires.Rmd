@@ -1,0 +1,148 @@
+---
+title: "CC°FF 5th Weather Chart - Wildfires (NL, Amsterdam) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Wildfires (NL, Amsterdam) Analysis
+
+## About
+
+In this analysis, we compared the amount of wildfires with sunshine duration and rainfall. The dataset is an overview of all the fire reports of the Amsterdam-Amstelland Fire Department in the period from 2010 to 2015.
+
+The steps taken for this analysis are:
+
+- Get wildfires data
+- Get weather data
+- Merge weather data with wildfires data
+- Remove the 31st of December and 1st of January data point for each year
+- Average the total of wildfires per sunshine duration
+- Average the total of rainfall per sunshine duration
+
+In the following section, you will find more details about each step.
+
+
+## Sources
+- Fire Reports 2010-2015 in Amsterdam-Amstelland : <https://data.amsterdam.nl/index.html#?dte=dcatd%2Fdatasets%2Fbrandmeldingen-2010-2015&dtfs=T&mpb=topografie&mpz=9&mpv=52.3719:4.9012>
+- KNMI Daily weather :
+    * <http://www.knmi.nl/nederland-nu/klimatologie/daggegevens>
+    * <http://www.knmi.nl/kennis-en-datacentrum/achtergrond/data-ophalen-vanuit-een-script>
+- Information on fires : <https://nl.wikipedia.org/wiki/Brand_(vuur)>
+
+## Methodology
+
+```{r libs, message=FALSE}
+# Load libraries
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+
+# Load util functions
+source('../utils_NL.R')
+```
+
+### Get fires data
+The fires dataset contains the date of the fires reports, the type of incident and the location. There are more fields available but they are not needed for the analysis.
+
+```{r sr, cache=TRUE}
+data <- read.csv('../data/brwaa_2010-2015.csv', header=TRUE, sep=";")
+
+# Format date column
+data$date <- as.Date(data$start_tijd, "%Y/%m/%d")
+
+# Remove trailing whitespace
+data$incident_type <- trimws(data$incident_type)
+data$gemeente <- trimws(data$gemeente)
+
+head(data)
+```
+
+### Get wildfires data in Amsterdam area
+
+```{r agg}
+# Get data for amsterdam only
+data_ams <- data[ data$gemeente == "Amsterdam", ]
+
+# Get the list of incident types
+incident_types <- unique(data_ams[c("incident_type")])
+incident_types
+
+# Filter to get only wildfires (Buitenbrand) incidents
+data_ams_out <- data_ams[data_ams$incident_type == as.character(incident_types[2, 'incident_type']), ]
+
+# Get total of wildfires per day
+sum_data <- aggregate(x=data_ams_out$date, by=list(data_ams_out$date), FUN=length)
+colnames(sum_data) <- c('date', 'Count')
+head(sum_data)
+```
+
+### Get the weather
+For more information on how the weather is treated, see the related reference.
+For this analysis we will use the weather data of Schipol weather station (STN=240). We get the weather data from KNMI and subset it to the desired station. After some formatting the weather data is ready to use.
+
+```{r weather, cache=TRUE}
+# KNMI weather stations
+nl_stations <- read.csv('../data/all_station_KNMI_cleaned.csv', header=TRUE, sep=",")
+# Weather data between 2005 and 2015
+weather_data <- getKNMIDailyData('2005', '03', '31', '2015', '05', '20')
+# Merge with station data
+weather_data_stn <- merge(weather_data, nl_stations, by='STN')
+# Subset for station 240
+weather_data_240 <- weather_data_stn[ weather_data_stn$STN == 240, ]
+# Format weather data
+weather_data_format <- formatNLWeatherDailyData(weather_data_240)
+head(weather_data_format)
+```
+
+
+### Merge weather and wildfires data
+
+```{r merge}
+sum_data_weather <- merge(sum_data, weather_data_format, by='date', all.y=TRUE)
+
+# For days without wildfires, set count to zero
+sum_data_weather$Count[is.na(sum_data_weather$Count)] <- 0
+```
+
+### Remove New Year's Eve outliers
+New Year's Eve comes with a huge peak of wildfires each year, which skew all the rest of the data. We will isolate the 31st of December and the 1st of January of each year.
+
+```{r nye-plot}
+ggplot(sum_data_weather, aes(x=date, y=Count)) + geom_line()
+```
+
+```{r nye}
+df_outnye <- sum_data_weather[ !(month(sum_data_weather$date) == 1 & day(sum_data_weather$date) == 1) & !(month(sum_data_weather$date) == 12 & day(sum_data_weather$date) == 31), ]
+```
+
+### Aggregate per sunshine duration
+Sunshine duration is given in hours by the variable SQ. We will use the column roundedSQ which is the rounded value of the original SQ value, to an integer.
+
+```{r sq}
+df_sq <- df_outnye %>% group_by(roundedSQ) %>% summarise(meanCount=mean(Count, na.rm=TRUE), meanRH = mean(RH, na.rm=TRUE))
+df_sq
+```
+
+## Plots
+
+```{r plot}
+p1 <- ggplot(df_sq, aes(roundedSQ)) + geom_bar(aes(weight=meanCount)) +
+    ylab("Average number of wildfires per day") +
+    xlab("Sunshine duration per day (hours)") +
+    ggtitle("Avg. number of wildfires per day depending on the sunshine duration")
+p1
+
+p2 <- ggplot(df_sq, aes(roundedSQ)) + geom_bar(aes(weight=meanRH)) +
+    ylab("Average rainfall per day (mm)") +
+    xlab("Sunshine duration per day (hours)") +
+    ggtitle("Avg. rainfall per day depending on the sunshine duration")
+p2
+```

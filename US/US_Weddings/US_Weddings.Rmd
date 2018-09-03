@@ -1,0 +1,138 @@
+---
+title: "C°F 5th Weather Chart - Weddings, (US, Travis County, Texas) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+
+# C°F 5th Weather Chart - Weddings, (US, Travis County, Texas) Analysis
+
+## About
+In this analysis, we compared the number of people getting married with temperature. 
+
+The Travis County Clerk Web Search presents a list of marriage records with the date of the marriage. 
+From that list which can be exported, we can count the number of marriage records per day. 
+
+The steps taken for this analysis are:
+
+- Get weddings data
+- Count the number of weddings per day
+- Merge with the weather data
+- Average the temperature per week over the 5 years
+- Count the total number of weddings per week and per year
+
+In the following section you will find more details for each step.
+
+## Sources 
+- Travis County Clerk Web Search, Marriage Records : <http://www.tccsearch.org/>
+- Highlights :
+    * <https://en.wikipedia.org/wiki/Same-sex_marriage_in_Texas>
+- NOAA Weather : <ftp://ftp.ncdc.noaa.gov/pub/data/ghcn/daily/by_year/>
+
+
+## Methodology
+
+``` {r libs, message=FALSE}
+source('../utils_US.R')
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+```
+
+### Get the marriages
+The marriages analysis uses 5 years of data: the start date is 2011-01-01, the end date is 2015-12-31. 
+We extracted the *Date of marriage* column. This is how the list looks like so far:
+
+```{r one-year, echo=FALSE}
+marriage_2011 <- read.csv('../data/us_weddings/2011.csv', header = FALSE)
+head(marriage_2011)
+```
+
+Then we aggregate the dataset by date, by counting the number of times a date is present. Finally we sum the number of marriages per day over a week. For this we used the *week*[^1] function from *lubridate* package.
+
+```{r get-marriages, echo=FALSE}
+
+getMarriagesPerWeek <- function(year){
+  
+  path <- paste('../data/us_weddings/', year, '.csv', sep='')
+  
+  marriages <- read.csv(path, header = FALSE)
+  colnames(marriages) <- c('date')
+  marriages$date <- as.Date(as.character(marriages$date), "%m/%d/%Y")
+  
+  marriagesPerDay <- aggregate(x=marriages$date, by=list(marriages$date), FUN=length)
+  colnames(marriagesPerDay) <- c('date', 'count')
+  
+  marriagesPerWeek <-  aggregate(cbind(count)~week(date),data=marriagesPerDay,FUN=sum)
+  names(marriagesPerWeek)[names(marriagesPerWeek) == 'week(date)'] <- 'WEEK'
+  marriagesPerWeek$YEAR <- year
+  
+  return(marriagesPerWeek)
+}
+
+marriages_2015 <- getMarriagesPerWeek('2015')
+marriages_2014 <- getMarriagesPerWeek('2014')
+marriages_2013 <- getMarriagesPerWeek('2013')
+marriages_2012 <- getMarriagesPerWeek('2012')
+marriages_2011 <- getMarriagesPerWeek('2011')
+
+marriages <- rbind(marriages_2011, marriages_2012, marriages_2013, marriages_2014, marriages_2015)
+head(marriages)
+```
+
+### Get the weather data
+For more details on how the weather data was treated, see the related reference. 
+As we are considering a county, we decided to average the weather data of the weather stations of the county, by date between 2011-01-01 and 2015-12-31. Then we averaged the weather data by week over the 5 years, which gives us a data point per week and year.
+
+``` {r weather, echo=FALSE}
+weather_data <- read.csv('../data/travis_weather_data.csv')
+head(weather_data)
+```
+
+### Marriages and weather
+Merging the marriages and weather data by week and year gives us a final dataset :
+
+```{r marriage-weather}
+df <- merge(marriages, weather_data, by=c('YEAR', 'WEEK'))
+head(df)
+```
+
+### Temperature
+Let's average the temperature per week over the 5 years:
+
+```{r temperature}
+temp <- weather_data %>% group_by(WEEK) %>% summarise(meanTMIN = mean(TMIN), meanTMAX = mean(TMAX))
+head(temp)
+```
+
+## Plots
+```{r plots}
+p1 <- ggplot(df, aes(x=WEEK, y=count, color=YEAR)) + geom_line() +
+    ggtitle("Total marriages per week") + 
+    ylab("Total marriages")
+p1
+
+p3 <- ggplot(temp) + geom_line(aes(x=WEEK, y=meanTMAX, color='tmax')) + geom_line(aes(x=WEEK, y=meanTMIN, color='tmin'))+
+    ggtitle("Mean min. and max. temperature per week averaged over 5 years") +
+    scale_colour_manual(name="Line Color",
+    values=c(tmax="red", tmin="steelblue")) +
+    ylab("Temperature (C)")
+p3
+
+```
+
+## Notes
+- On the final graph, we removed the data point for week 53, as it only contains one day. 
+- On the final graph, temperature is plotted in Fahrenheit
+
+[^1]: "week returns the number of complete seven day periods that have occured between the date and
+January 1st, plus one." <https://cran.r-project.org/web/packages/lubridate/lubridate.pdf>

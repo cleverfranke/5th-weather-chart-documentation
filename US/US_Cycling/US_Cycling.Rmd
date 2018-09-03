@@ -1,0 +1,147 @@
+---
+title: "C°F 5th Weather Chart - Cycling, (US, Palo Alto) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+
+# C°F 5th Weather Chart - Cycling, (US, Palo Alto) Analysis
+
+## On Strava
+
+Strava is a website and mobile app used to track athletic activity via GPS. One type of data from Strava is called a *Segment* and is defined as "specific sections of road" on which "athletes' times are compared". An athlete performance is called an *Effort*. Back when the analysis was made, Strava API had an available endpoint `/segments/{segment_id}/all_efforts` which allowed to request for all the performance of athletes on a given segment, for a given date range, without the need of athlete's approval. This endpoint is unfortunately not available anymore, thus fetching the data is not reproducible.
+
+
+## About
+
+In this analysis, we compared the number of people cycling with temperature and rainfall. 
+
+The steps taken for this analysis are:
+
+- Get the number of cycling rides per day
+- Merge with the weather data
+- Aggregate to the total number of rides per week, mean temperature and cumulative rainfall per week.
+
+In the following section, you will find more details about each step.
+
+## Sources 
+- Strava API : <https://strava.github.io/api/>
+- Highlights :
+    * <http://sanfrancisco.cbslocal.com/2015/05/14/south-bay-hail-lightning-and-thunder-storm-rain-drought/>
+    * <https://www.ncdc.noaa.gov/stormevents/eventdetails.jsp?id=554921>
+- NOAA Weather : <ftp://ftp.ncdc.noaa.gov/pub/data/ghcn/daily/by_year/>
+
+
+## Methodology
+
+``` {r libs, message=FALSE}
+source('../utils_US.R')
+library(plyr)
+library(ggplot2)
+library(lubridate)
+```
+
+
+### Find a segment
+There are many segments available. After logging in the Strava website, it is possible to [explore segments](https://www.strava.com/segments/explore) for a given location.
+
+The criterias to pick a segment to analyse were:
+
+- The segment should have a large amount of athlete efforts recorded
+- The segment should not be a particular segment where the attendance levels could be influenced by a major factor.
+For example, a segment located on a university campus could be biased by scheduled sport trainings, and therefore would not reflect a weather influence.
+
+Following this two rules we picked a segment called ["Old La Honda (Bridge to Mailboxes)"](https://www.strava.com/segments/8109834). It is a ride segment in Woodside, California.
+
+
+### Get efforts for a segment
+By querying the API with the segment ID, a start timestamp and an end timestamp, we get back the list of efforts conducted on the segment. 
+For the segment we picked, the ID was `8109834`, and the date range was `start_date_local=2015-01-01T00:00:00Z` to `end_date_local=2015-12-31T23:59:59Z`.
+Example of the response head:
+```{r query-api,  echo=FALSE}
+segmentData <- read.csv('../data/segmentData_8109834.csv')
+head(segmentData)
+```
+
+
+### Get the number of rides per day
+The goal is to obtain the amount of rides per day. The number of records for a given date is what gives us this amount. 
+```{r aggregate}
+# Format date
+segmentData$YYYYMMDD <- as.Date(segmentData$start_date_local, "%Y-%m-%d")
+
+# Aggregate by date
+sf_data <- ddply(segmentData , .(YYYYMMDD) , summarise , Count = length(YYYYMMDD))
+head(sf_data)
+```
+
+### Get the weather data
+For more details on how the weather data was treated, see the related reference. 
+As we are considering a 4km cycling path, we decided to average the weather data of the closest weather stations around the cycling path, which accounts to 22 weather stations.
+The weather data and the segment data are then merged by date.
+
+```{r get-weather, echo=FALSE}
+weather_sf_average <- read.csv('../data/weather_sf_average_2015.csv')
+# Format date
+weather_sf_average$date <- as.Date(weather_sf_average$date , "%Y-%m-%d")
+```
+
+```{r merge-weather}
+# Change aggregated segment data  column name to date
+names(sf_data)[names(sf_data) == 'YYYYMMDD'] <- 'date'
+
+# Merge aggregated segment data with the weather data
+sf_data_weather <- merge(sf_data, weather_sf_average, by='date')
+head(sf_data_weather)
+```
+
+### Aggregate data by week
+Then we aggregate the data per week, as it is easier to read the chart this way. For this we used the *week*[^3] function from *lubridate* package.
+
+
+```{r byweek}
+meanbyweek <- aggregate(cbind(Count, PRCP, TMAX, TMIN)~week(date),data=sf_data_weather,FUN=mean)
+colnames(meanbyweek) <- c("week", "meanCount", "meanPRCP", "meanTMAX", "meanTMIN")
+sumbyweek <- aggregate(cbind(Count, PRCP, TMAX, TMIN)~week(date),data=sf_data_weather,FUN=sum)
+sumbyweek <- sumbyweek[c("week(date)", "Count", "PRCP")]
+colnames(sumbyweek) <- c("week", "totalCount", "totalPRCP")
+```
+
+## Plots
+
+```{r plot}
+l <- rep(1, nrow(sumbyweek))
+p1 <- ggplot(sumbyweek, aes(x=week, y=totalCount)) + geom_line() + ggtitle("Total amount of rides per week")
+p1
+p2 <- ggplot(sumbyweek, aes(x=week, y=l, size=totalPRCP)) + geom_point() + ggtitle("Cumulative rainfall per week (mm)") + theme(axis.line=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y=element_blank()) +
+        scale_size_area()
+p2
+p3 <- ggplot(meanbyweek) + geom_line(aes(x=week, y=meanTMAX, color='tmax')) + geom_line(aes(x=week, y=meanTMIN, color='tmin'))+
+    ggtitle("Mean min. and max. temperature per week") +
+    scale_colour_manual(name="Line Color",
+    values=c(tmax="red", tmin="steelblue")) +
+    ylab("Temperature (C)")
+p3
+```
+
+
+## Notes
+- On the final graph, we show only rainfall values that are superior to 0.1 inches per week
+- On the final graph, we removed the data point for week 53, as it only contains one day. 
+- On the final graph, temperature is plotted in Fahrenheit and rainfall is plotted in inches. 
+
+
+[^1]: https://en.wikipedia.org/wiki/Strava.
+[^2]: https://strava.github.io/api/v3/segments/
+[^3]: "week returns the number of complete seven day periods that have occured between the date and
+January 1st, plus one." https://cran.r-project.org/web/packages/lubridate/lubridate.pdf

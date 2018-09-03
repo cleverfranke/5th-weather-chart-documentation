@@ -1,0 +1,158 @@
+---
+title: "C°F 5th Weather Chart - Street Robberies (NL, Rotterdam) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Street Robberies (NL, Rotterdam) Analysis
+
+## About
+In this analysis, we compared the number of street robberies with the temperature. 
+
+A street robbery is defined as "Offender used purposefully and deliberately before or during the robbery, violence against their victims, to take possession of any property or to force the release of such goods. This includes the robberies committed in an elevator, gallery, interior street, porch or landing." [^1]
+
+The steps taken for this analysis are:
+
+- Get the street robberies data
+- Count the number of street robberies per day
+- Merge with the weather data per day
+- Calculate the temperature tercile
+
+In the following section, you will find more details about each step.
+
+## Sources 
+- Rotterdam street robberies in 2011 and 2012 : <http://rotterdamopendata.nl/dataset/straatroven-rotterdam-2011-en-2012>
+- KNMI Daily weather : 
+    * <http://www.knmi.nl/nederland-nu/klimatologie/daggegevens>
+    * <http://www.knmi.nl/kennis-en-datacentrum/achtergrond/data-ophalen-vanuit-een-script>
+- Testing time-sensitive influences of weather on street robbery : <https://crimesciencejournal.springeropen.com/articles/10.1186/s40163-015-0022-9>
+
+
+## Methodology
+
+```{r libs, message=FALSE}
+source('../utils_NL.R')
+
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+```
+
+### Get the street robberies data
+The street robberies dataset contains the date of the robbery and the location. There are more fields available but we don't need them for the analysis. 
+
+```{r sr}
+data <- read.csv('../data/Straatroof-2011.csv', header=TRUE, sep=",")
+# Get non empty lines
+data <- data[data$gem.datum != '', ]
+# Format date column
+data$date <- as.Date(data$gem.datum, "%d/%m/%Y")
+
+head(data)
+```
+
+### Get the number of street robberies per day
+We are going to count the street robberies by day:
+
+```{r agg}
+sum_data <- ddply( data , .(date) , summarise , Count = length(date))
+colnames(sum_data) <- c('date', 'Count')
+head(sum_data)
+```
+
+### Get the weather
+For more information on how the weather is treated, see the related reference. 
+First we subset the weather stations to those around Rotterdam. For this particular case the subset correspond to one station only.
+
+```{r weather-stations}
+# KNMI weather stations
+nl_stations <- read.csv('../data/all_station_KNMI_cleaned.csv', header=TRUE, sep=",")
+
+# Get stations of Rotterdam area
+rot_stations <- nl_stations[ nl_stations$LAT > 51.854132 & nl_stations$LAT < 51.983343 & nl_stations$LON < 4.640430 & nl_stations$LON > 4.393526, ]
+rot_stations
+```
+
+Then we get the weather from KNMI and merge it with the station in order to get the weather of that station.
+After some formatting the weather data is ready to use.
+
+```{r weather}
+# Weather data between 2011 and 2012
+weather_data <- getKNMIDailyData('2011', '01', '01', '2012', '12', '31')
+# Merge with station data
+weather_data_stn <- merge(weather_data, rot_stations, by='STN')
+# Format weather data
+weather_data_format <- formatNLWeatherDailyData(weather_data_stn)
+head(weather_data_format)
+```
+
+### Merge street robberies data and weather data
+We merge by date.
+
+```{r merge}
+# Merge by date
+sum_data_weather <- merge(sum_data, weather_data_format, by='date', all.y=TRUE)
+```
+
+There might be days without any street robbery, therefore we fill in with zeros:
+
+```{r zeros}
+sum_data_weather$Count[is.na(sum_data_weather$Count)] <- 0
+head(sum_data_weather)
+nrow(sum_data_weather)
+```
+
+### Terciles
+"The nth percentile of an observation variable is the value that cuts off the first n percent of the data values when it is sorted in ascending order."[^2] 
+Average temperature was sorted in ascending order and then cut into three parts. 
+
+- The 1st part has 244 days
+- The 2nd part has 244 days
+- The 3rd part has 243 days
+
+```{r temp-quantiles}
+# Terciles
+q <- quantile(sum_data_weather$TG, seq(0,1, by=1/3))
+q
+
+# Order by max temperature
+ordered <- sum_data_weather[order(sum_data_weather$TG, sum_data_weather$date),]
+
+# Get the three sections
+first <- ordered[1:244,]
+second <- ordered[245:488,]
+third <- ordered[489:731,]
+
+# % of street robberies - First
+100 * sum(first$Count) / sum(sum_data_weather$Count)
+
+# % of street robberies - Second 
+100 * sum(second$Count) / sum(sum_data_weather$Count)
+
+# % of street robberies - Third
+100 * sum(third$Count) / sum(sum_data_weather$Count)
+
+```
+
+The number above are slightly different from the one we used on the weather chart. The reason for this is that we did the quantile analysis in Excel, in which the ordering of the temperature might differ for equal temperatures. Around the first quantile, there are several temperature values of 8.1C. Excel seem to have order the data differently from R, therefore the data with a temperature of 8.1C does not fall in the same quantiles in both analysis. 
+
+
+## Plots
+
+```{r plot}
+p1 <- ggplot(sum_data_weather, aes(x=TG, y=Count)) + geom_point() +
+    ylim(c(0,16)) +
+    geom_smooth(method="lm")
+p1
+```
+
+[^1]: From <http://rotterdamopendata.nl/dataset/straatroven-rotterdam-2011-en-2012>
+[^2]: From <http://www.r-tutor.com/elementary-statistics/numerical-measures/percentile>

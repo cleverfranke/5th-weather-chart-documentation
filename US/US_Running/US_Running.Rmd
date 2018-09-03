@@ -1,0 +1,123 @@
+---
+title: "C°F 5th Weather Chart - Running, (US, Seattle) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output: 
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Running, (US, Seattle) Analysis
+
+## On Strava
+
+Strava is a website and mobile app used to track athletic activity via GPS. One type of data from Strava is called a *Segment* and is defined as "specific sections of road" on which "athletes' times are compared". An athlete performance is called an *Effort*. Back when the analysis was made, Strava API had an available endpoint `/segments/{segment_id}/all_efforts` which allowed to request for all the performance of athletes on a given segment, for a given date range, without the need of athlete's approval. This endpoint is unfortunately not available anymore, thus fetching the data is not reproducible.
+
+
+## About
+
+In this analysis, we compared the number of people running with temperature. 
+
+The steps taken for this analysis are:
+
+- Get the number of runs per day
+- Merge with the weather data
+- Aggregate to the total number of runs per week and temperature per week.
+
+In the following section, you will find more details about each step.
+
+## Sources 
+- Strava API : <https://strava.github.io/api/>
+- NOAA Weather : <ftp://ftp.ncdc.noaa.gov/pub/data/ghcn/daily/by_year/>
+
+
+## Methodology
+
+
+``` {r libs, message=FALSE}
+source('../utils_US.R')
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+```
+
+
+### Find a segment
+There are many segments available. After logging in the Strava website, it is possible to [explore segments](https://www.strava.com/segments/explore) for a given location.
+
+The criterias to pick a segment to analyse were:
+
+- The segment should have a large amount of athlete efforts recorded
+- The segment should not be a particular segment where the attendance levels could be influenced by a major factor.
+For example, a segment located on a university campus could be biased by scheduled sport trainings, and therefore would not reflect a weather influence.
+
+Following this two rules we picked a segment called ["Let it RIP!"](https://www.strava.com/segments/1475344). It is a ride segment in Woodland Park, Seattle.
+
+
+### Get efforts for a segment
+By querying the API with the segment ID, a start timestamp and an end timestamp, we get back the list of efforts conducted on the segment. 
+For the segment we picked, the ID was `1475344`, and the date range was `start_date_local=2010-01-01T00:00:00Z` to `end_date_local=2015-12-31T23:59:59Z`.
+Example of the response head:
+
+```{r query-api,  echo=FALSE}
+segmentData <- read.csv('../data/segmentData_1475344.csv')
+head(segmentData)
+```
+
+
+### Get the amount of runs per day
+The goal is to obtain the amount of runs per day and the average speed of runners. The number of records for a given date is what gives us this amount, and the total Time and Distance ran will give us the average speed.
+
+```{r aggregate}
+# Format date
+segmentData$YYYYMMDD <- as.Date(segmentData$start_date_local, "%Y-%m-%d")
+
+# Aggregate by date
+st_data <- ddply( segmentData , .(YYYYMMDD) , summarise , Count = length(YYYYMMDD), totalDistance = sum(distance), totalTime = sum(elapsed_time), meanTime= mean(elapsed_time), meanDistance=mean(distance) )
+
+head(st_data)
+```
+
+### Get the weather data
+For more details on how the weather data was treated, see the related reference.
+As we are considering a 1km running path, we decided to average the weather data of the closest weather stations around the running path.
+The weather data and the segment data are then merged by date. Result of merge is:
+
+```{r weather, echo=FALSE}
+df <- read.csv('../data/US_ST_LetItRip_1475344_count2010-15.csv')
+head(df)
+```
+
+
+### Speed and number of people running
+
+- The average number of people running per day is defined as the sum of all the recorded runs divided by the number of days, for days with a temperature falling in a bucket.
+- The average speed of people running per day is defined as the sum of the whole distance ran divided by the whole duration ran per day, for days with a temperature falling in a bucket.
+
+
+## Plot
+
+```{r plot}
+df_tmax <- df %>% group_by(tmax = round(TMAX,0)) %>% summarise(meanCount = mean(Count, na.rm=TRUE))
+
+p1 <- ggplot(df_tmax, aes(x=tmax, y=meanCount)) + geom_point() + labs(x="Max. Temperature", y="Avg. amount of runners per day") + ggtitle("Amount of runners depending on max. temperature per day")
+p1
+
+
+df_speed <- df %>% group_by(tmax = round(TMAX,0)) %>% summarise(sumDistance = sum(totalDistance, na.rm=TRUE), sumDuration=sum(totalTime,na.rm=TRUE))
+df_speed$speed <- df_speed$sumDistance / df_speed$sumDuration
+
+p2 <- ggplot(df_speed, aes(x=tmax, y=speed)) + geom_point() + labs(x="Max. Temperature", y="Avg. speed of runners per day") + ggtitle("Speed of runners depending on max. temperature per day") + geom_smooth(method=lm) + expand_limits(y = 0)
+p2
+```
+
+
+## Notes
+- On the final chart, the temperature is in Fahrenheit and the speed is in miles per hour
+- We removed the days where the temperature was below 30F and above 95F because both these buckets had less than 10 data points in them.
+

@@ -1,0 +1,304 @@
+---
+title: "C°F 5th Weather Chart - Bike Shares (NL, Utrecht) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Bike Shares (NL, Utrecht) Analysis
+
+## About
+
+In this analysis, we compared the number of bike shares around Utrecht Central train station with the average temperature, sunshine duration and rain duration.
+
+OV-Fiets is a bike share system of the Netherlands. Thanks to the Geodienst department of the University of Groningen, we could access the bike share stations monitoring data. The data monitored is the number of bikes available at a bike share station. The data provided focuses on 4 OV-Fiets stations in Utrecht.
+
+We conducted this analysis by making the assumption that *the number of bikes available at a bike share station is a fair indicator of the number of bikes that are currently being used*. 
+
+The steps taken for this analysis are:
+
+- Get OV-Fiets data
+- Calculate the average number of bikes available per hour at each OV-Fiets station
+- Get weather data per hour
+- Merge weather data and OV-Fiets data per hour and date
+- Get the overall average number of bikes available for 3 OV-Fiets station
+- Aggregate per temperature, per sunshine duration and finally per rain duration
+
+In the following section, you will find more details about each step.
+
+
+## Sources 
+- Geodienst - University of Groningen, data was available on request. More information:  <http://www.rug.nl/society-business/centre-for-information-technology/research/services/gis/blog/blog-19-11-2015-live-ov-fiets-kaart>
+- KNMI Hourly weather : 
+    * <http://www.knmi.nl/nederland-nu/klimatologie/uurgegevens>
+    * <http://www.knmi.nl/kennis-en-datacentrum/achtergrond/data-ophalen-vanuit-een-script>
+
+
+## Methodology
+
+
+```{r libs, message=FALSE}
+
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+source('../utils_NL.R')
+```
+
+### Get OV-Fiets data
+
+```{r ov}
+data <- read.csv('../data/OVFietsUtrechtCentraal01092404.csv', header=TRUE)
+head(data)
+```
+
+The `STATIONCODE`, `DESCRIPTION` and `LOCATIONCODE` indicate the OV-Fiets station. `OPEN` indicate if the station is open (some stations close at night). `DATUMTIJD` is the timestamp at which the data was captured. `RENTALBIKES` is the number of bikes currently at the station.
+
+Some formatting is needed:
+
+```{r ov-format}
+# Format date
+data$date <- as.Date(data$DATUMTIJD, "%m/%d/%Y")
+
+# Format hour 
+data$hour <- format(strptime(data$DATUMTIJD,format = '%m/%d/%Y %H:%M:%S'), "%H")
+data$hour <- gsub("(?<![0-9])0+", "", data$hour, perl = TRUE)
+data[data$hour == "", 'hour'] <- "0"
+
+# Clean data (station is open and rental bikes number is not NA)
+data_ov <- data[data$OPEN == 'Yes' & !is.na(data$RENTALBIKES), ]
+
+head(data_ov)
+```
+
+
+### Get average number of bikes available per hour
+We are going to analyse the variation of OV-Fiets availability per hour.
+
+```{r avg}
+# Average rental bikes data per location and date and hour
+data_ov_byhour <- aggregate(data_ov$RENTALBIKES, by=list(data_ov$LOCATIONCODE, data_ov$STATIONCODE, data_ov$DESCRIPTION, data_ov$date, data_ov$hour), FUN=mean)
+colnames(data_ov_byhour) <- c('LOCATIONCODE', 'STATIONCODE', 'DESCRIPTION', 'date', 'hour', 'meanRB')
+
+head(data_ov_byhour)
+```
+
+
+### Get weather data
+For more information on how the weather is treated, see the related reference. For this analysis we need hourly data.
+
+```{r weather, cache=TRUE}
+# KNMI weather stations
+nl_stations <- read.csv('../data/all_station_KNMI_cleaned.csv', header=TRUE, sep=",")
+
+# Get weather data
+weather_hour_data <- getKNMIHourlyData('2016090101', '2017042324')
+
+# Select weather records which have temperature, rain and sunshine data
+weather_data_hour_full <- weather_hour_data[!is.na(weather_hour_data$T) & !is.na(weather_hour_data$RH) & !is.na(weather_hour_data$DR) & !is.na(weather_hour_data$SQ), ]
+
+# Format weather data
+weather_data_hour_format <- formatNLWeatherHourlyData(weather_data_hour_full)
+
+# Get stations that have records for temperature, rain and sunshine data
+nl_stations_hour_full <- merge(nl_stations, unique(weather_data_hour_format[c("STN")]), by='STN')
+head(nl_stations_hour_full)
+```
+
+
+### Get closest weather station to OV-Fiets station
+The geolocation of the OV-Fiets station was also provided by the university of Groningen.
+
+```{r location}
+location <- read.csv('../data/NL_OV_Location.csv')
+names(location)[names(location) == 'POINT_X'] <- 'LON'
+names(location)[names(location) == 'POINT_Y'] <- 'LAT'
+head(location)
+```
+
+For each OV-Fiets station in the dataset we want to find the closest weather station.
+
+```{r closest}
+# Get utrecht OV-Fiets locations
+location_ut <- location[location$LOCATIONCODE %in% data_ov_byhour$LOCATIONCODE,]
+
+# Find closest weather station to each
+closest_stations_hour <- getClosestWeatherStation(location_ut, nl_stations_hour_full)
+closest_stations_hour
+```
+
+In fact all the OV-Fiets station are the closest to the weather station 260.
+
+### Get average amount of bikes available per hour and date
+There are 4 OV-Fiets stations. They have values per hour and date. We want an overview of what is happening by hour and date, in Utrecht, therefore we want to have per hour and per date the average number of bike available for each station.
+
+```{r  per-hour}
+# Station ut001
+df_01 <- data_ov_byhour[data_ov_byhour$LOCATIONCODE == 'ut001',]
+df_01 <- df_01[c('date', 'hour', 'meanRB')]
+colnames(df_01) <- c('date', 'hour', 'ut1_meanRB')
+
+# Station ut002
+df_02 <- data_ov_byhour[data_ov_byhour$LOCATIONCODE == 'ut002',]
+df_02 <- df_02[c('date', 'hour', 'meanRB')]
+colnames(df_02) <- c('date', 'hour', 'ut2_meanRB')
+
+# Station ut004
+df_04 <- data_ov_byhour[data_ov_byhour$LOCATIONCODE == 'ut004',]
+df_04 <- df_04[c('date', 'hour', 'meanRB')]
+colnames(df_04) <- c('date', 'hour', 'ut4_meanRB')
+
+# Station ut005
+df_05 <- data_ov_byhour[data_ov_byhour$LOCATIONCODE == 'ut005',]
+df_05 <- df_05[c('date', 'hour', 'meanRB')]
+colnames(df_05) <- c('date', 'hour', 'ut5_meanRB')
+
+# Merge by date and hour
+df_0102 <- merge(df_02, df_01, by=c('date', 'hour'), all.x=TRUE)
+df_010204 <- merge(df_04, df_0102, by=c('date', 'hour'), all.x=TRUE)
+df_all <- merge(df_010204, df_05, by=c('date', 'hour'), all.x=TRUE)
+
+head(df_all)
+```
+
+
+### Merge OV-Fiets data and weather data
+```{r merge}
+df_all$STN <- 260
+df_all_weather <- merge(df_all , weather_data_hour_format, by=c('STN', 'date', 'hour'))
+head(df_all_weather)
+```
+
+
+### Clean dataset
+As we can see in the summary, among the 4 OV-Fiets station, the `ut005` one has 2905 NAs. We are going to exclude `ut005` from the analysis for that reason.
+
+```{r clean}
+summary(df_all_weather)
+
+df_all_weather$ut5_meanRB <- NULL
+head(df_all_weather)
+```
+
+Next, we observed that the data is not always correctly captured. We noticed this by plotting the data over time. If you look closely you'll find that the number of bikes available remains identical several hours in a row, which is really unlikely.
+
+```{r redundant}
+df_all_weather$timestamp <- paste(df_all_weather$date, ' ', df_all_weather$hour, ':00:00', sep='')
+df_all_weather$timestamp <- strptime(df_all_weather$timestamp , "%Y-%m-%d %H:%M:%S")
+
+ggplot(df_all_weather, aes(x=timestamp, y=ut1_meanRB)) + geom_line()
+ggplot(df_all_weather, aes(x=timestamp, y=ut2_meanRB)) + geom_line()
+ggplot(df_all_weather, aes(x=timestamp, y=ut4_meanRB)) + geom_line()
+```
+
+For example the first days available in the dataset show the same data values over the days. Below is the list of records we removed from the dataset. The methodology was to remove records where the values remained identitcal over several hours.
+
+```{r out}
+OV_out <- read.csv('../data/NL_OV_out.csv')
+OV_out$date <- as.Date(OV_out$date, format="%d/%m/%y")
+OV_out$timestamp <- paste(OV_out$date, ' ', OV_out$hour, ':00:00', sep='')
+OV_out$timestamp <- strptime(OV_out$timestamp , "%Y-%m-%d %H:%M:%S")
+OV_out[c('date', 'hour', 'ut1_meanRB', 'ut2_meanRB', 'ut4_meanRB')]
+```
+
+That accounts for `r nrow(OV_out)` records removed.
+
+```{r final}
+nrow(df_all_weather)
+df_all_clean <- df_all_weather[!(df_all_weather$timestamp %in% OV_out$timestamp), ]
+nrow(df_all_clean)
+df_all_clean$timestamp <- as.character(df_all_clean$timestamp)
+```
+
+Finally we remove the rows when one of the station value is NA.
+
+```{r out-na}
+df_all_clean <- df_all_clean[!is.na(df_all_clean$ut1_meanRB) & !is.na(df_all_clean$ut2_meanRB) & !is.na(df_all_clean$ut4_meanRB),]
+nrow(df_all_clean)
+```
+
+### Get average amount of bikes available for the 3 stations
+We have now the average amount of bikes available, per station, per hour and per date. We want an overview for the three stations. To do this we sum the three averages together.
+
+```{r sum}
+df_all_clean$sum124 <- df_all_clean$ut1_meanRB + df_all_clean$ut2_meanRB + df_all_clean$ut4_meanRB
+head(df_all_clean)
+```
+
+
+## Plots
+### Temperature
+We want one value per 0.5C. To do this we can average `sum124` by each temperature, rounded to 0.5C. We will remove data points that have less than 10 hours of records to account for.
+
+
+```{r  temp}
+# Round temperature values to 0.5C
+df_all_clean$roundedT_05 <- round(df_all_clean$T/0.5,0)*0.5
+
+# Aggregate per rounded temperature
+df_temp <- df_all_clean %>% group_by(roundedT_05) %>% summarise(mean124 = mean(sum124), count=length(timestamp))
+
+# Remove outliers
+df_temp_out <- df_temp[df_temp$count >= 10,]
+head(df_temp_out)
+
+# Linear regression
+fit <- lm(mean124 ~ roundedT_05, df_temp_out, na.action=na.omit)
+fit
+
+# Plot
+p1 <- ggplot(df_temp_out, aes(x=roundedT_05, y=mean124)) + geom_point() + geom_smooth(method='lm') +
+    ylim(c(0,300)) +
+    xlab("Temperature (C)") +
+    ylab("Average amount of bikes available") +
+    ggtitle("OV-Fiets availability in Utrecht depending \n on temperature (station ut001, ut002 and ut004)")
+p1
+```
+
+
+### Sunshine duration
+We want one value per 15mn. To do this we can average `sum124` by each 15mn of sunshine duration.
+
+```{r sq}
+# Round temperature values to 0.5C
+df_all_clean$roundedSQ_15 <- round(df_all_clean$SQ*60/15,0)*15
+
+# Aggregate per rounded temperature
+df_sq <- df_all_clean %>% group_by(roundedSQ_15) %>% summarise(mean124 = mean(sum124), count=length(sum124))
+head(df_sq)
+
+# Plot
+p2 <- ggplot(df_sq, aes(as.character(roundedSQ_15))) + geom_bar(aes(weight=mean124)) +
+    xlab("Sunshine duration (minutes)") +
+    ylab("Average amount of bikes available") +
+    ggtitle("OV-Fiets availability in Utrecht depending \n on sunshine duration (station ut001, ut002 and ut004)")
+p2
+```
+
+
+### Rain duration
+We want one value per 15mn. To do this we can average `sum124` by each 15mn of rain duration.
+
+```{r  dr}
+# Round temperature values to 0.5C
+df_all_clean$roundedDR_15 <- round(df_all_clean$DR*60/15,0)*15
+
+# Aggregate per rounded temperature
+df_dr <- df_all_clean %>% group_by(roundedDR_15) %>% summarise(mean124 = mean(sum124), count=length(sum124))
+head(df_dr)
+
+# Plot
+p3 <- ggplot(df_dr, aes(as.character(roundedDR_15))) + geom_bar(aes(weight=mean124)) +
+    xlab("Rain duration (minutes)") +
+    ylab("Average amount of bikes available") +
+    ggtitle("OV-Fiets availability in Utrecht depending \n on rain duration (station ut001, ut002 and ut004)")
+p3
+```

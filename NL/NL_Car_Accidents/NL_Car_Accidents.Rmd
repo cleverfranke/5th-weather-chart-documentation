@@ -1,0 +1,308 @@
+---
+title: "C°F 5th Weather Chart - Car Accidents (NL, Limburg) Analysis"
+author: Agathe Lenclen
+date: Aug. 2018
+output:
+  md_document:
+    variant: markdown_github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+```
+
+# C°F 5th Weather Chart - Car Accidents (NL, Limburg) Analysis
+
+## About
+In this analysis, we compared the number of car accidents with the visibility.
+
+The file Registered Road Crash Netherlands lists road crashes reports from the police. 
+
+The steps taken for this analysis are:
+
+- Get the car accidents data
+- Calculate the number of car accidents per hour and municipality
+- Get the weather data per hour
+- Associate closest weather station to each car accident location
+- Merge weather data and car accidents data per hour, date and weather station
+- Calculate average and total number of car accidents per visibility
+- Calculate the number of car accidents per hour of the day
+- Calculate the number of times a visibility was observed per hour of the day
+
+In the following section, you will find more details about each step.
+
+## Sources 
+- Rijkswaterstaat - Traffic accidents - Registered Road Crash Netherlands :
+  * [2010](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vavw)
+  * [2011](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vavx)
+  * [2012](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vavy)
+  * [2013](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vavz)
+  * [2014](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vawa)
+  * [2015](https://geoservices.rijkswaterstaat.nl/apps/geonetwork/srv/dut/catalog.search#/metadata/4gqrs90k-vobr-5t59-x726-4x2unrs1vawb)
+- KNMI Hourly weather : 
+    * <http://www.knmi.nl/nederland-nu/klimatologie/uurgegevens>
+    * <http://www.knmi.nl/kennis-en-datacentrum/achtergrond/data-ophalen-vanuit-een-script>
+- Limburg population per municipality : <https://en.wikipedia.org/wiki/List_of_municipalities_of_the_Netherlands>
+
+
+## Methodology
+
+```{r libs, message=FALSE}
+library(plyr)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+library(reshape)
+source('../utils_NL.R')
+```
+
+### Get accident data
+We used data from 2010 to 2015. Each year comes as a seperate .csv file. We're only interested by accidents in the province of Limburg. 
+
+```{r acc, cache=TRUE}
+# Loads the csv and filter by province name
+getNL_accidents_Data <- function(province, file){
+  nl_accidents <- read.csv(file, sep=",", header=TRUE)
+  return(nl_accidents[nl_accidents$PVE_NAAM == province,])
+}
+
+# Get the 6 files
+nl_accidents2010 <- getNL_accidents_Data('Limburg', '../data/ongevallen2010.csv')
+nl_accidents2011 <- getNL_accidents_Data('Limburg', '../data/ongevallen2011.csv')
+nl_accidents2012 <- getNL_accidents_Data('Limburg', '../data/ongevallen2012.csv')
+nl_accidents2013 <- getNL_accidents_Data('Limburg', '../data/ongevallen2013.csv')
+nl_accidents2014 <- getNL_accidents_Data('Limburg', '../data/ongevallen2014.csv')
+nl_accidents2015 <- getNL_accidents_Data('Limburg', '../data/ongevallen2015.csv')
+
+# Bind data together (by row)
+nl_accidents <- rbind(nl_accidents2010, nl_accidents2011, nl_accidents2012, nl_accidents2013, nl_accidents2014, nl_accidents2015)
+
+# Format date
+nl_accidents$date <- as.Date(as.character(nl_accidents$DATUM_VKL), "%Y%m%d")
+
+# Accident data has an hour column that is mapped on 0 to 23 while weather data is mapped on 1 to 24.
+nl_accidents$UUR <- nl_accidents$UUR + 1
+
+head(nl_accidents)
+```
+
+### Get number of car accidents per date, hour and municipality
+From this dataset we essentially need the date, hour and location of each accident. Then we can count the number of accidents per date, hour and municipality:
+
+```{r agg}
+sum_data <- aggregate(x=nl_accidents$date, by=list(nl_accidents$date,nl_accidents$UUR, nl_accidents$GME_NAAM), FUN=length)
+colnames(sum_data) <- c('date', 'HH', 'gemeente', 'Count')
+head(sum_data)
+```
+
+### Get the location and population data of each municipality
+This is a list of the municipality in Limburg, with the population and the geolocation.[^1]
+
+```{r gemeente}
+gemeente <- read.csv('../data/NL_Accidents_LimburgGemeente.csv', header=TRUE)
+gemeente
+```
+
+### Get the weather data
+The date range is 2010-01-01 to 2015-12-31. We want hourly weather data.
+
+```{r weather, cache=TRUE}
+nl_stations <- read.csv('../data/all_station_KNMI_cleaned.csv', header=TRUE, sep=",")
+
+# Get stations of area
+area_stations <- nl_stations[ nl_stations$LAT > 50.751601 & nl_stations$LAT < 51.801337 & nl_stations$LON < 6.171017 & nl_stations$LON > 5.555782, ]
+
+# Get hourly weather data
+weather_data <- getKNMIHourlyData('2010010101', '2015123124')
+colnames(weather_data) <- c('STN', 'YYYYMMDD',   'HH',   'DD',   'FH',   'FF',   'FX',    'T',  'T10',   'TD',   'SQ',    'Q',   'DR',   'RH',    'P',   'VV',    'N',    'U',   'WW',   'IX',    'M',    'R',    'S',    'O',    'Y')
+
+# Format date
+weather_data$date <- as.Date(as.character(weather_data$YYYYMMDD), "%Y%m%d")
+
+weather_data <- weather_data[weather_data$date <= '2015-12-31' & weather_data$date >= '2010-01-01', ]
+
+# Get weather station that have data for visibility
+weather_data_temp <- weather_data[!is.na(weather_data$VV), ]
+area_stations <- merge(area_stations, unique(weather_data_temp[c("STN")]), by='STN')
+
+# Merge with station data
+weather_data_stn <- merge(weather_data, area_stations, by="STN")
+head(weather_data_stn)
+```
+
+### Find the closest weather station to each municipality
+Now, for each municipality, we'll find the closest weather stations.
+
+```{r closest}
+sp.gemeente <- gemeente
+coordinates(sp.gemeente) <- ~LON+LAT
+sp.area_stations <- area_stations
+coordinates(sp.area_stations) <- ~LON+LAT
+
+# Get distance between all points
+d <- gDistance(sp.area_stations, sp.gemeente, byid=TRUE)
+min.d <- apply(d, 1, function(x) order(x, decreasing=F)[1])
+
+# Get minimum distance to point and merge it with corresponding weather station
+closest_stations <- cbind(gemeente, area_stations[min.d,], apply(d, 1, function(x) sort(x, decreasing=F)[1]))
+head(closest_stations)
+
+# Merge gemeent lat and long with data
+sum_data_gemeente <- merge(sum_data, closest_stations[c('gemeente', 'STN')], by='gemeente')
+
+head(sum_data_gemeente)
+```
+
+# Merge weather and accident data
+Finally we can merge weather data with accident data.
+
+```{r merge, cache=TRUE}
+weather_data_vv <- weather_data_stn[c('STN', 'date', 'HH', 'VV')]
+sum_data_weather <- merge(weather_data_vv, sum_data_gemeente, by=c('STN', 'date', 'HH'), all.x=TRUE)
+
+# When there are no accidents in an hour, fill with zeros
+sum_data_weather$Count[is.na(sum_data_weather$Count)] <- 0
+
+head(sum_data_weather)
+```
+
+### Get the number of car accidents per date and hour
+We are interested in the visibility (weather code is VV). We will sum the number of car accidents per date and hour over the different municipalities. And average the visibility per date and hour over the different municipalities. 
+
+```{r vv, cache=TRUE}
+# Sum all accidents per date and hour
+sumperDayandHour <- aggregate(x=sum_data_weather$Count, by=list(sum_data_weather$date, sum_data_weather$HH), FUN = sum)
+
+# Get average visibility in limburg per date and hour
+meanperDayandHour <- aggregate(sum_data_weather$VV, by=list(sum_data_weather$date, sum_data_weather$HH), FUN = mean)
+
+# Bind results 
+df_vv <- merge(sumperDayandHour, meanperDayandHour, by=c('Group.1', 'Group.2'))
+colnames(df_vv) <- c('date', 'hour', 'sumAccidents', 'avgVV')
+
+head(df_vv)
+```
+
+## Plots
+### Average number of car accidents per visibility
+The visibility is given in 0.1km. So a value of 50 means a visibility range of 5-6 km. For each possible rounded visibility, we'll average the number of car accidents per hour. 
+We'll remove data points that have less than 20 hours of occurences.
+
+```{r vv-plot}
+df_vv$rounded_VV <- round(df_vv$avgVV, 0)
+df_vv_perhour <- df_vv %>% group_by(rounded_VV) %>% summarise(avgacc = mean(sumAccidents), count = length(rounded_VV))
+
+# Remove low base data points
+df_vv_perhour <- df_vv_perhour[df_vv_perhour$count >= 20,]
+
+p1 <- ggplot(df_vv_perhour, aes(x=rounded_VV, y=avgacc)) + geom_point() + geom_smooth() +
+    xlab("Visibility (0.1km)") +
+    ylab("Average number of car accidents per hour") +
+    ggtitle("Average number of car accidents per hour in Limburg province, \n depending on visibility") +
+    ylim(c(0,1.5))
+
+p1
+```
+
+### Total number of accidents per visibility
+We also want to know how many car accidents occur per visibility, in total over the years. 
+
+```{r vv-plot2}
+df_vv_total <- df_vv %>% group_by(rounded_VV) %>% summarise(sumacc = sum(sumAccidents), count = length(rounded_VV))
+
+# Create bins to group by 1km visibility
+df_vv_total$bin <- cut(df_vv_total$rounded_VV, breaks = seq(-1, 90, by = 10))
+totals <- df_vv_total %>% group_by(bin) %>% summarise(sumBin=sum(sumacc))
+
+p2 <- ggplot(totals, aes(x=bin)) + geom_bar(aes(weight=sumBin)) +
+    xlab("Visibility (0.1km)") +
+    ylab("Total number of car accidents") +
+    ggtitle("Total number of car accidents in Limburg province, \n depending on visibility")
+
+p2
+```
+
+### Total occurences of visibility and car accidents per hour
+We want to count the number of car accidents that happen at each hour of the day, depending on the visibility. We'll group the visibility by range of 1km.
+Then, for each group of visibility, we will count how many hours it happened at a certain hour of the day. In short, we want to plot the frequency of car accidents and visibility in a day. 
+
+```{r vv-plot3}
+# Create bins to group by 1 km visibility
+df_vv$bin <- cut(df_vv$rounded_VV, breaks = seq(-1, 90, by = 10))
+
+# For each hour of the day (1 to 24), count how many accidents happen at that hour, at a given visibility
+reshape1 <- df_vv[c('bin', 'hour', 'sumAccidents')]
+df_acc_freq <- cast(reshape1, hour~bin, sum)
+# This table shows on the first row the bins of visibility. The left column shows the hours of the day.
+# The values of the table are the total amount of accidents
+df_acc_freq
+
+# For each hour of the day (1 to 24), count how many times a visibility happen at that hour
+reshape2 <- df_vv[c('bin', 'hour')]
+df_vis_freq <- cast(reshape1, hour~bin, length)
+# This table shows on the first row the bins of visibility. The left column shows the hours of the day.
+# The values of the table are the total amount of times it happened.
+df_vis_freq 
+```
+
+This plot shows how many car accidents per hour occur when the visibility is from 0 to 0.9km. If it's 9am, that's when most of the accident happen when there is low visibility.
+
+```{r vv-plot4}
+p3 <- ggplot() + geom_line(data=df_acc_freq, aes_string(x='hour', y='`(-1,9]`')) +
+    xlab("Hours of the day (24=midnight)") +
+    ylab("Total number of car accidents") +
+    ggtitle("Total number of car accidents per hour of the day \n when the visibility is from 0 to 0.9km")
+p3
+```
+
+This plot shows how many times the visibility from 0 to 0.9km has happened, per hour. For example 0 to 0.9km of visibility is most likely to happen at 5am.
+
+```{r vv-plot5}
+p4 <- ggplot() +  geom_line(data=df_vis_freq, aes_string(x='hour', y='`(-1,9]`')) +
+        xlab("Hours of the day (24=midnight)") +
+        ylab("Total number of times") +
+        ggtitle("Total number of times 0 to 0.9km of visibility happened, \n per hour of the day")
+p4
+```
+
+This plot shows how many accidents per hour occur when the visibility is from 8 to 8.9km. If it's 5pm or 6pm, that's when most of the accident happen when there is high visibility.
+
+```{r vv-plot6}
+p5 <- ggplot() + geom_line(data=df_acc_freq, aes_string(x='hour', y='`(79,89]`')) +
+    xlab("Hours of the day (24=midnight)") +
+    ylab("Total number of car accidents") +
+    ggtitle("Total number of accidents per hour of the day \n when the visibility is from 8 to 8.9km")
+p5
+```
+
+This plot shows how many times the visibility from 8 to 8.9km has happened, per hour. For example 8 to 8.9km of visibility is most likely to happen at 4pm.
+
+```{r vv-plot7}
+p6 <- ggplot() +  geom_line(data=df_vis_freq, aes_string(x='hour', y='`(79,89]`')) +
+        xlab("Hours of the day (24=midnight)") +
+        ylab("Total number of times") +
+        ggtitle("Total number of times 8 to 8.9km of visibility happened, \n per hour of the day")
+p6
+```
+
+## Map data
+The map shows the amount of accidents per municipality, per  1000 inhabitants, and per year. 
+
+```{r map}
+# Get amount of accidents per municipality
+geoloc <- aggregate(x=sum_data_gemeente$Count, by=list(sum_data_gemeente$gemeente), FUN=sum)
+colnames(geoloc) <- c('gemeente', 'Sum per gemeente')
+
+# Merge with municipalities geodata
+geoloc <- merge(geoloc, gemeente, by='gemeente')
+
+# Get amount of accidents per 1000 inhabitants, per year (there are 6 years)
+geoloc$perThousandperYear <- ((geoloc$`Sum per gemeente` / geoloc$Population ) * 1000) / 6
+
+geoloc
+```
+
+[^1]: The population comes from the Wikipedia page listed in the sources. The geolocation comes from google maps (it points at the center of the municipality).
+
+
